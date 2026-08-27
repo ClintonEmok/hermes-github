@@ -7,7 +7,7 @@ scouting surface for the contributions you mean to make. Keep your saved
 searches local, then bring in Hermes when an issue deserves a triage, a
 summary, or a closer look.
 
-POWERED BY HERMES AGENT · COMMUNITY PLUGIN · VERSION 0.0.1
+POWERED BY HERMES AGENT · COMMUNITY PLUGIN · VERSION 0.1.0
 
 [Make it yours](#make-it-yours) · [Understand the data](#privacy-you-can-explain-in-one-breath)
 
@@ -37,56 +37,73 @@ and use your configured Hermes providers.
 
 ## Less maintenance. More finishing.
 
+- **The token finds itself.** No setup ceremony: the backend resolves a
+  GitHub token automatically (ordered ladder: `GITHUB_TOKEN`/`GH_TOKEN` env
+  vars → `gh auth token` → the same names in `~/.hermes/.env`), and the
+  token never leaves the server.
 - Refresh automatically every 15 minutes while Hermes is open, or on demand.
 - Open an issue and it is marked read; mark the whole list read in one click.
 - Add a saved search in seconds; remove it with one click.
-- Works unauthenticated (60 GitHub requests/hour) or with a token (5,000/hr).
+- No token anywhere? It falls back to the unauthenticated GitHub budget
+  (60 requests/hour) and tells you so.
 
 ## Built for real repos, not a demo list
 
-Hermes GitHub is a single desktop plugin with its own **GitHub** category
-(sidebar nav + ⌘K command). It calls the GitHub REST API directly from the
-renderer, keeps read history locally, and works with stock Hermes Desktop.
-There is no fork, upstream patch, separate backend, build step, or package
-manager.
+Hermes GitHub is a single unified-package plugin — one folder with a
+plain-ESM desktop half (`desktop/plugin.js`) and a thin Python backend
+(`dashboard/plugin_api.py`, FastAPI) that auto-detects your token and
+proxies GitHub search calls. It works with stock Hermes Desktop; there is no
+fork, upstream patch, build step, or package manager.
 
 ## Make it yours
 
 ### Install
 
-Copy [`plugin.js`](plugin.js) into your Hermes desktop plugins folder:
+Copy the repo folder into your Hermes plugins directory and enable it:
 
+```bash
+cp -R hermes-github ~/.hermes/plugins/
+hermes plugins enable hermes-github
 ```
-$HERMES_HOME/desktop-plugins/hermes-github/plugin.js
-```
 
-(`$HERMES_HOME` is `~/.hermes` by default, or `~/.hermes/profiles/<name>`
-for a named profile.)
+(`~/.hermes` is the default root; use `~/.hermes/profiles/<name>/plugins` …
+actually the backend is discovered from the hermes root — see below.)
 
-Then run **Reload desktop plugins** from ⌘K — or just wait, the app hot-loads
-new plugins within seconds. Open the **GitHub** entry in the sidebar.
+Then restart the gateway once (Settings → Gateway, or relaunch the app) so
+the backend's API routes mount. The desktop half hot-loads by itself: open
+the **GitHub** entry in the sidebar (⌘K → **Reload desktop plugins** if it
+doesn't appear within a few seconds).
 
-### Optional: a token
+> The Python backend only mounts when the plugin is enabled *and* the
+> gateway has (re)started after install. Until then the UI degrades
+> gracefully to direct unauthenticated GitHub calls.
 
-Without a token the GitHub search API grants the unauthenticated budget
-(60 requests/hour — plenty for a few queries on manual refresh). For the
-5,000/hour budget, create a fine-grained personal access token with **read
-access to public repositories** (no permissions are needed for public data)
-and paste it into the plugin's settings row (gear icon). The token is stored
-in the plugin's namespaced local storage and never sent anywhere except
-api.github.com.
+### Tokens — three rungs, no typing
+
+1. **Detected automatically** (backend): `GITHUB_TOKEN` / `GH_TOKEN`
+   (process env), else `gh auth token` (your logged-in gh CLI — shown in
+   the settings row as *Auto: gh CLI (yourlogin)*), else the same names in
+   `$HERMES_HOME/.env` / `~/.hermes/.env`.
+2. **Manual override** — the settings row still accepts a token; it is sent
+   server-side per request, never stored in plugin storage.
+3. **Nothing at all** — unauthenticated mode with the 60 req/hr budget and
+   a visible hint.
+
+Rate limits: unauthenticated 60 req/hr; any detected token raises the
+budget to 5,000 req/hr.
 
 ## Privacy you can explain in one breath
 
 Your queries and read state live in Hermes' local plugin storage. There is no
-account, no server, no telemetry, and no third party in the path: the plugin
-talks to api.github.com directly, and the only AI calls are the ones you
-explicitly trigger — each carries the issue snapshot marked as untrusted
-source data, and the agent is instructed never to act on instructions found
-inside it.
+account, no server, no telemetry, and no third party in the path: the Python
+backend talks to api.github.com directly (token stays in the gateway
+process — it is never returned to the renderer, never written to plugin
+storage). The only AI calls are the ones you explicitly trigger — each
+carries the issue snapshot marked as untrusted source data, and the agent is
+instructed never to act on instructions found inside it.
 
 ## Roadmap
 
-- **v0.1** — per-query unread counts, pinned issues, issue/PR detail preview.
-- **v0.2** — PR health glance (mergeable, CI status) for the "Open PRs" query.
-- **v0.3** — feature-scout sweep: batch triage of fresh pickable leads (P1–P3 bugs, open feature requests).
+- **v0.2** — per-query unread counts, pinned issues, issue/PR detail preview.
+- **v0.3** — PR health glance (mergeable, CI status) for the "Open PRs" query.
+- **v0.4** — feature-scout sweep: batch triage of fresh pickable leads (P1–P3 bugs, open feature requests).

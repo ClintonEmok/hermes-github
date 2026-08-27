@@ -1,0 +1,10 @@
+{
+  "name": "hermes-github",
+  "label": "GitHub",
+  "description": "GitHub issues & PRs reader for Hermes Desktop — saved searches, read/unread, token auto-detect, agent triage handoff",
+  "version": "0.1.0",
+  "api": "plugin_api.py",
+  "tab": {
+    "hidden": true
+  }
+}

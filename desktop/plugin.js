@@ -1,19 +1,20 @@
 /**
  * Hermes GitHub — issues & PRs reader with an agent in the room.
  *
- * A single-file Hermes desktop plugin (plain ESM, hot-reloaded). Modeled on
- * the community hermes-rss plugin: saved queries instead of feeds, read/unread
- * history, open the original on GitHub, and a one-click handoff to a native
- * Hermes chat that triages the issue for pick-up as a contribution.
+ * Unified-package plugin: this is the DESKTOP HALF. The Python backend
+ * (dashboard/plugin_api.py) auto-detects the GitHub token server-side
+ * (env vars → `gh auth token` → .env files) and proxies search calls, so
+ * the token never needs to be handled by the renderer.
  *
- * Install: copy this file to <hermes home>/desktop-plugins/hermes-github/plugin.js
- * (folder name must equal the plugin id — "hermes-github"), then run
- * "Reload desktop plugins" from Cmd+K.
+ * Layout:
+ *   <hermes home>/plugins/hermes-github/plugin.yaml? no —
+ *   <hermes home>/plugins/hermes-github/dashboard/manifest.json  (backend)
+ *   <hermes home>/plugins/hermes-github/dashboard/plugin_api.py  (backend)
+ *   <hermes home>/plugins/hermes-github/desktop/plugin.js        (this file)
  *
- * Data goes directly to the GitHub REST API from the renderer (CORS-open).
- * Without a token you get the unauthenticated budget (60 req/hr); add a
- * fine-grained read-only token in the plugin's settings row to raise it to
- * 5,000 req/hr. The token is stored in the plugin's namespaced local storage.
+ * Enable the backend once: `hermes plugins enable hermes-github`, then
+ * restart the gateway so its API routes mount. Until then the UI falls back
+ * to direct unauthenticated GitHub calls (or a manually entered token).
  */
 
 import { useState, useEffect, useMemo } from 'react'
@@ -59,27 +60,11 @@ const ghostBtnCls =
   'rounded-md px-2 py-1 text-xs text-(--ui-text-secondary) transition-colors hover:bg-(--chrome-action-hover) hover:text-foreground'
 
 /* ------------------------------------------------------------------ */
-/* GitHub API                                                          */
+/* GitHub data layer                                                   */
 /* ------------------------------------------------------------------ */
 
-async function ghSearch(query, token) {
-  const url =
-    `${SEARCH_ENDPOINT}?q=${encodeURIComponent(query)}&per_page=40&sort=updated&order=desc`
-  const headers = { Accept: 'application/vnd.github+json' }
-  if (token) headers.Authorization = `Bearer ${token}`
-  const res = await fetch(url, { headers })
-  if (!res.ok) {
-    let detail = `GitHub returned ${res.status}`
-    try {
-      const body = await res.json()
-      if (body && body.message) detail = body.message
-    } catch {
-      /* keep status fallback */
-    }
-    throw new Error(detail)
-  }
-  const data = await res.json()
-  return (data.items || []).map((item) => {
+function normalizeItems(items) {
+  return (items || []).map((item) => {
     const repo = (item.repository_url || '').split('/repos/')[1] || 'unknown'
     return {
       key: `${repo}#${item.number}`,
@@ -97,6 +82,40 @@ async function ghSearch(query, token) {
       body: (item.body || '').slice(0, 8000)
     }
   })
+}
+
+async function ghSearchBackend(query, token, ctx) {
+  const res = await ctx.rest('/search', {
+    method: 'POST',
+    body: { q: query, per_page: 40, token: token || null },
+    timeoutMs: 25000
+  })
+  if (!res || !Array.isArray(res.items))
+    throw new Error(
+      (res && res.error && (res.error.detail || res.error.message)) ||
+        'Backend returned an unusable response'
+    )
+  return normalizeItems(res.items)
+}
+
+async function ghSearchDirect(query, token) {
+  const url =
+    `${SEARCH_ENDPOINT}?q=${encodeURIComponent(query)}&per_page=40&sort=updated&order=desc`
+  const headers = { Accept: 'application/vnd.github+json' }
+  if (token) headers.Authorization = `Bearer ${token}`
+  const res = await fetch(url, { headers })
+  if (!res.ok) {
+    let detail = `GitHub returned ${res.status}`
+    try {
+      const body = await res.json()
+      if (body && body.message) detail = body.message
+    } catch {
+      /* keep status fallback */
+    }
+    throw new Error(detail)
+  }
+  const data = await res.json()
+  return normalizeItems(data.items || [])
 }
 
 /* ------------------------------------------------------------------ */
@@ -193,6 +212,7 @@ function relativeTime(iso) {
 /* ------------------------------------------------------------------ */
 
 function GitHubPage({ ctx }) {
+  const hasBackend = typeof ctx.rest === 'function'
   const [token, setToken] = useState(() => String(ctx.storage.get('token') || ''))
   const [tokenDraft, setTokenDraft] = useState(token)
   const [showSettings, setShowSettings] = useState(false)
@@ -212,6 +232,28 @@ function GitHubPage({ ctx }) {
     const saved = ctx.storage.get('read')
     return new Set(Array.isArray(saved) ? saved : [])
   })
+
+  /* Backend liveness + auto-detect status (never the token itself). */
+  const [backendOk, setBackendOk] = useState(false)
+  const [autoStatus, setAutoStatus] = useState(null)
+  useEffect(() => {
+    if (!hasBackend) return
+    let alive = true
+    ctx.rest('/status', { method: 'GET', timeoutMs: 10000 })
+      .then((s) => {
+        if (!alive) return
+        setAutoStatus(s || null)
+        setBackendOk(true)
+      })
+      .catch(() => {
+        if (!alive) return
+        setAutoStatus(null)
+        setBackendOk(false)
+      })
+    return () => {
+      alive = false
+    }
+  }, [ctx, hasBackend])
 
   const saveQueries = (next) => {
     setQueriesState(next)
@@ -235,8 +277,12 @@ function GitHubPage({ ctx }) {
     isLoading,
     error
   } = useQuery({
-    queryKey: ['gh', active ? active.id : null, token],
-    queryFn: () => (active ? ghSearch(active.q, token) : Promise.resolve([])),
+    queryKey: ['gh', active ? active.id : null, token, backendOk],
+    queryFn: () => {
+      if (!active) return Promise.resolve([])
+      if (backendOk) return ghSearchBackend(active.q, token, ctx)
+      return ghSearchDirect(active.q, token)
+    },
     enabled: !!active,
     refetchInterval: AUTO_REFRESH_MS
   })
@@ -264,6 +310,9 @@ function GitHubPage({ ctx }) {
     ctx.storage.set('read', [])
   }
   const unreadCount = items.filter((i) => !read.has(i.key)).length
+
+  const autoTokenActive = Boolean(autoStatus && autoStatus.token)
+  const effectiveToken = token || autoTokenActive
 
   const openItem = async (item) => {
     markRead(item.key)
@@ -306,6 +355,19 @@ function GitHubPage({ ctx }) {
     `rounded-full border px-2.5 py-0.5 text-xs transition-colors ${isActive
       ? 'border-(--ui-accent) text-(--ui-accent)'
       : 'border-(--ui-stroke-secondary) text-(--ui-text-secondary) hover:text-foreground'}`
+
+  let autoLine
+  if (!hasBackend) {
+    autoLine = 'Backend not mounted — restart the gateway for auto-detect'
+  } else if (autoStatus && autoStatus.source === 'gh-cli') {
+    autoLine = `Auto: gh CLI (${autoStatus.login || 'authenticated'})`
+  } else if (autoStatus && autoStatus.source) {
+    autoLine = `Auto: ${autoStatus.source}`
+  } else if (autoStatus && !autoStatus.token) {
+    autoLine = 'No token found — run gh auth login or set one below'
+  } else {
+    autoLine = 'Detecting…'
+  }
 
   return jsxs('div', {
     className: 'flex h-full flex-col text-sm',
@@ -406,19 +468,19 @@ function GitHubPage({ ctx }) {
           })
         : null,
 
-      /* token settings row */
+      /* token settings row — auto-detect status + optional override */
       showSettings
         ? jsxs('div', {
             className: 'flex items-center gap-2 border-b border-(--ui-stroke-secondary) px-4 py-2',
             children: [
               jsx('div', {
-                className: 'text-xs text-(--ui-text-tertiary)',
-                children: 'Token (fine-grained, read-only)'
+                className: 'min-w-0 flex-1 text-xs text-(--ui-text-tertiary)',
+                children: autoLine
               }),
               jsx('input', {
                 type: 'password',
-                className: `${inputCls} flex-1`,
-                placeholder: token ? '•••••••• (set)' : 'github_pat_… or ghp_…',
+                className: `${inputCls} w-64`,
+                placeholder: token ? '•••••••• (override set)' : 'Manual override (optional)',
                 value: tokenDraft,
                 onChange: (e) => setTokenDraft(e.target.value)
               }),
@@ -426,13 +488,13 @@ function GitHubPage({ ctx }) {
                 type: 'button',
                 className: `${ghostBtnCls} border border-(--ui-stroke-secondary)`,
                 onClick: saveToken,
-                children: 'Save'
+                children: 'Set'
               }),
               jsx('button', {
                 type: 'button',
                 className: ghostBtnCls,
                 onClick: resetRead,
-                children: 'Reset read state'
+                children: 'Reset read'
               })
             ]
           })
@@ -553,11 +615,12 @@ function GitHubPage({ ctx }) {
                   ]
                 })
               }),
-              !token
+              !effectiveToken
                 ? jsx('div', {
                     className: 'px-4 py-2 text-[0.6875rem] text-(--ui-text-tertiary)',
-                    children:
-                      'No token — unauthenticated GitHub budget (60 req/hr). Add a fine-grained read-only token in settings for 5,000 req/hr.'
+                    children: hasBackend
+                      ? 'No token — unauthenticated GitHub budget (60 req/hr). Run gh auth login or set a token in settings.'
+                      : 'No token — unauthenticated GitHub budget (60 req/hr). Enable the backend for auto-detect.'
                   })
                 : null
             ]
