@@ -29,7 +29,7 @@ a next step without turning every issue into an AI task.
 
 | | |
 | --- | --- |
-| **Read** Subscribe to saved GitHub searches (repo, label, priority, anything the search syntax supports), open the original issue or PR, and browse one query at a time. | **Remember** Issues and PRs you have opened fade out; unread items stay easy to spot. Read state is stored locally and survives restarts. |
+| **Read** Subscribe to any number of **repositories** (like RSS feeds) — each comes with Issues and PRs views, plus your own saved searches per repo. Unsubscribe without losing read markers; everything stays local. | **Remember** Issues and PRs you have opened fade out; unread items stay easy to spot, with per-repo unread counts on every subscription chip. Read state is stored locally and survives restarts. |
 | **Scout** Ask the agent to triage a single issue: full-thread reading, competing-PR check, and a pickability verdict with the files likely involved. | **Act** The triage chat drafts the terse claim comment for your approval — the plugin never posts anything itself. |
 | **Dispatch** Pick a connected profile (a **To:** dropdown) and hand a row a task: **Review** (verdict + concrete review comments for issues or PRs) or **Solve** (a full implementation run with worktree + test discipline). Every dispatch opens an editor first — tweak the agent's instructions per action, or **Save as default** to persist your own prompt for that action kind. The task opens as a session on that profile. | **Stay in control** Every task prompt — yours or the built-in — gets the untrusted-source-data wrapper and an explicit *no posting, no pushing, no PRs without approval* guard appended automatically; the receiving agent drafts, you approve. |
 
@@ -44,9 +44,9 @@ and use your configured Hermes providers.
   token never leaves the server.
 - Refresh automatically every 15 minutes while Hermes is open, or on demand.
 - Open an issue and it is marked read; mark the whole list read in one click.
-- Add a saved search in seconds; remove it with one click.
+- Subscribe to a repo in seconds (its Issues + PRs views appear automatically); add custom views per repo; unsubscribing keeps your read history.
 - No token anywhere? It falls back to the unauthenticated GitHub budget
-  (60 requests/hour) and tells you so.
+  (60 requests/hour) and tells you so — including the live rate-limit readout.
 
 ## Built for real repos, not a demo list
 

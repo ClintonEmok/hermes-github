@@ -34,24 +34,29 @@ const ID = 'hermes-github'
 const SEARCH_ENDPOINT = 'https://api.github.com/search/issues'
 const AUTO_REFRESH_MS = 15 * 60 * 1000
 
-// First-run defaults are generic and, when the backend can detect the
-// GitHub account, personalized to whoever is authenticated (community
-// plugin: works for anyone, tailored to the current login).
-const SEED_HINT = {
-  id: 'hot-prs',
-  name: 'Hot PRs',
-  q: 'is:pr is:open sort:updated-desc'
+// Multi-repo model (RSS-style): REPOS are the subscriptions; each repo has
+// VIEWS (query tabs) — generic by default, personalized to the detected
+// account for the "Your activity" pseudo-repo.
+const ACTIVITY_ID = 'activity'
+
+function repoSlug(repo) {
+  return repo.toLowerCase().replace(/[^a-z0-9/-]+/g, '-')
 }
 
-function makeDefaultQueries(login) {
-  if (login) {
-    return [
-      { id: 'my-prs', name: 'Your PRs', q: `author:${login} is:pr is:open` },
-      { id: 'assigned', name: 'Assigned', q: `assignee:${login} is:open` },
-      { id: 'mentions', name: 'Mentions', q: `involves:${login} is:open` }
-    ]
-  }
-  return [SEED_HINT]
+function makeDefaultViews(repo) {
+  return [
+    { name: 'Issues', q: `repo:${repo} is:issue is:open` },
+    { name: 'PRs', q: `repo:${repo} is:pr is:open` }
+  ]
+}
+
+function makeActivityViews(login) {
+  if (!login) return []
+  return [
+    { name: 'Your PRs', q: `author:${login} is:pr is:open` },
+    { name: 'Assigned', q: `assignee:${login} is:open` },
+    { name: 'Mentions', q: `involves:${login} is:open` }
+  ]
 }
 
 const inputCls =
@@ -274,10 +279,11 @@ const chipCls = (isActive) =>
     ? 'border-(--ui-accent) text-(--ui-accent)'
     : 'border-(--ui-stroke-secondary) text-(--ui-text-secondary) hover:text-foreground'}`
 
-/* Query tab with its own live unread count (kept fresh so switching tabs
-   feels instant). */
-function QueryChip({
-  query,
+/* Repository subscription chip: fetches all its views and shows the
+   aggregated unread count (RSS-style feed chip). */
+function RepoChip({
+  repo,
+  views,
   isActive,
   read,
   backendOk,
@@ -288,27 +294,32 @@ function QueryChip({
   onRemove
 }) {
   const { data: items = [] } = useQuery({
-    queryKey: ['gh-chip', query.id, token, backendOk],
-    queryFn: () => {
-      if (backendOk) return ghSearchBackend(query.q, token, ctx)
-      return ghSearchDirect(query.q, token)
+    queryKey: ['gh-repo', repo.id, token, backendOk, views.map((v) => v.q).join('|')],
+    queryFn: async () => {
+      const lists = await Promise.all(
+        views.map((v) =>
+          backendOk ? ghSearchBackend(v.q, token, ctx) : ghSearchDirect(v.q, token)
+        )
+      )
+      return lists.flat()
     },
-    enabled: !!query.q,
+    enabled: views.length > 0,
     refetchInterval: AUTO_REFRESH_MS
   })
   const unread = items.filter((i) => !read.has(i.key)).length
+  const name = repo.repo || 'Your activity'
   return jsxs('div', {
     className: 'flex items-center',
     children: [
       jsx('button', {
         type: 'button',
         className: chipCls(isActive),
-        title: query.q,
+        title: repo.repo ? `repo:${repo.repo}` : 'activity across your account',
         onClick: onSelect,
         children: jsxs('span', {
           className: 'flex items-center gap-1.5',
           children: [
-            jsx('span', { children: query.name }),
+            jsx('span', { children: name }),
             unread > 0
               ? jsx('span', {
                   className:
@@ -323,7 +334,31 @@ function QueryChip({
         ? jsx('button', {
             type: 'button',
             className: 'px-0.5 text-xs text-(--ui-text-tertiary) hover:text-red-400',
-            title: 'Remove query',
+            title: 'Unsubscribe (retains read markers)',
+            onClick: onRemove,
+            children: '×'
+          })
+        : null
+    ]
+  })
+}
+
+function ViewChip({ name, isActive, showRemove, onSelect, onRemove }) {
+  return jsxs('div', {
+    className: 'flex items-center',
+    children: [
+      jsx('button', {
+        type: 'button',
+        className: chipCls(isActive),
+        title: 'View within the selected repository',
+        onClick: onSelect,
+        children: name
+      }),
+      showRemove
+        ? jsx('button', {
+            type: 'button',
+            className: 'px-0.5 text-xs text-(--ui-text-tertiary) hover:text-red-400',
+            title: 'Remove view',
             onClick: onRemove,
             children: '×'
           })
@@ -344,13 +379,22 @@ function GitHubPage({ ctx }) {
   const [showAdd, setShowAdd] = useState(false)
   const [addName, setAddName] = useState('')
   const [addQuery, setAddQuery] = useState('')
+  const [repoDraft, setRepoDraft] = useState('')
 
+  const [repos, setReposState] = useState(() => {
+    const saved = ctx.storage.get('repos')
+    return Array.isArray(saved) && saved.length ? saved : []
+  })
   const [queries, setQueriesState] = useState(() => {
     const saved = ctx.storage.get('queries')
     return Array.isArray(saved) && saved.length ? saved : []
   })
-  const [activeId, setActiveId] = useState(() => {
-    const saved = ctx.storage.get('active')
+  const [activeRepoId, setActiveRepoId] = useState(() => {
+    const saved = ctx.storage.get('activeRepo')
+    return typeof saved === 'string' && saved ? saved : null
+  })
+  const [activeViewId, setActiveViewId] = useState(() => {
+    const saved = ctx.storage.get('activeView')
     return typeof saved === 'string' && saved ? saved : null
   })
   const [read, setRead] = useState(() => {
@@ -401,44 +445,90 @@ function GitHubPage({ ctx }) {
     }
   }, [ctx])
 
+  const saveRepos = (next) => {
+    setReposState(next)
+    ctx.storage.set('repos', next)
+  }
   const saveQueries = (next) => {
     setQueriesState(next)
     ctx.storage.set('queries', next)
   }
   useEffect(() => {
-    if (activeId) ctx.storage.set('active', activeId)
-  }, [activeId, ctx])
+    if (activeRepoId) ctx.storage.set('activeRepo', activeRepoId)
+  }, [activeRepoId, ctx])
+  useEffect(() => {
+    if (activeViewId) ctx.storage.set('activeView', activeViewId)
+  }, [activeViewId, ctx])
 
-  /* First-run seeding: generic tabs, personalized to the detected login. */
+  /* First-run seeding + legacy migration (queries without repoId land in
+     the "Your activity" pseudo-repo). Generic + login-personalized. */
   const seededRef = useRef(false)
   useEffect(() => {
     if (seededRef.current) return
-    const saved = ctx.storage.get('queries')
-    if (Array.isArray(saved) && saved.length) {
+    const savedRepos = ctx.storage.get('repos')
+    const savedQueries = ctx.storage.get('queries')
+    const hasRepos = Array.isArray(savedRepos) && savedRepos.length
+    const hasQueries = Array.isArray(savedQueries) && savedQueries.length
+    if (hasRepos || hasQueries) {
+      if (hasQueries && !hasRepos) {
+        saveRepos([{ id: ACTIVITY_ID, repo: null }])
+        saveQueries(
+          savedQueries.map((q, i) => ({
+            id: q.id || `v-${i}`,
+            repoId: ACTIVITY_ID,
+            name: q.name,
+            q: q.q
+          }))
+        )
+        const savedActive = ctx.storage.get('active')
+        if (savedActive) {
+          setActiveViewId(savedActive)
+          ctx.storage.set('activeView', savedActive)
+        }
+      }
       seededRef.current = true
       return
     }
     const login = autoStatus && autoStatus.login ? autoStatus.login : null
-    saveQueries(makeDefaultQueries(login))
-    seededRef.current = true
-  }, [autoStatus])
-
-  /* Upgrade the login-less seed once the account is detected. */
-  useEffect(() => {
-    if (!autoStatus || !autoStatus.login) return
-    const saved = ctx.storage.get('queries') || []
-    if (saved.length === 1 && saved[0].q === SEED_HINT.q) {
-      saveQueries(makeDefaultQueries(autoStatus.login))
+    if (login) {
+      const views = makeActivityViews(login)
+      saveRepos([{ id: ACTIVITY_ID, repo: null }])
+      saveQueries(
+        views.map((v) => ({
+          id: `${ACTIVITY_ID}-${repoSlug(v.name)}`,
+          repoId: ACTIVITY_ID,
+          name: v.name,
+          q: v.q
+        }))
+      )
+      setActiveRepoId(ACTIVITY_ID)
+      seededRef.current = true
     }
+    // No login yet (backend not mounted/account unknown): stay empty and
+    // re-run when /status resolves.
   }, [autoStatus])
 
-  const active = useMemo(
-    () => queries.find((q) => q.id === activeId) || queries[0],
-    [queries, activeId]
+  const activeRepo = useMemo(
+    () => repos.find((r) => r.id === activeRepoId) || repos[0],
+    [repos, activeRepoId]
   )
   useEffect(() => {
-    if (!queries.some((q) => q.id === activeId)) setActiveId(queries[0] ? queries[0].id : null)
-  }, [queries, activeId])
+    if (!repos.some((r) => r.id === activeRepoId))
+      setActiveRepoId(repos[0] ? repos[0].id : null)
+  }, [repos, activeRepoId])
+
+  const repoViews = useMemo(
+    () => queries.filter((q) => q.repoId === (activeRepo ? activeRepo.id : null)),
+    [queries, activeRepo]
+  )
+  const activeView = useMemo(
+    () => repoViews.find((v) => v.id === activeViewId) || repoViews[0],
+    [repoViews, activeViewId]
+  )
+  useEffect(() => {
+    if (!repoViews.some((v) => v.id === activeViewId))
+      setActiveViewId(repoViews[0] ? repoViews[0].id : null)
+  }, [repoViews, activeViewId])
 
   const queryClient = useQueryClient()
   const {
@@ -446,15 +536,24 @@ function GitHubPage({ ctx }) {
     isLoading,
     error
   } = useQuery({
-    queryKey: ['gh', active ? active.id : null, token, backendOk],
+    queryKey: ['gh-view', activeView ? activeView.id : null, token, backendOk],
     queryFn: () => {
-      if (!active) return Promise.resolve([])
-      if (backendOk) return ghSearchBackend(active.q, token, ctx)
-      return ghSearchDirect(active.q, token)
+      if (!activeView) return Promise.resolve([])
+      if (backendOk) return ghSearchBackend(activeView.q, token, ctx)
+      return ghSearchDirect(activeView.q, token)
     },
-    enabled: !!active,
+    enabled: !!activeView,
     refetchInterval: AUTO_REFRESH_MS
   })
+  const viewSig = repoViews.map((v) => v.q).join('|')
+  const repoCache = queryClient.getQueryData([
+    'gh-repo',
+    activeRepo ? activeRepo.id : null,
+    token,
+    backendOk,
+    viewSig
+  ])
+  const activeRepoUnread = (repoCache || []).filter((i) => !read.has(i.key)).length
 
   const markRead = (key) => {
     setRead((prev) => {
@@ -478,7 +577,7 @@ function GitHubPage({ ctx }) {
     setRead(new Set())
     ctx.storage.set('read', [])
   }
-  const unreadCount = items.filter((i) => !read.has(i.key)).length
+  const unreadCount = activeRepoUnread
 
   const autoTokenActive = Boolean(autoStatus && autoStatus.token)
   const effectiveToken = token || autoTokenActive
@@ -528,21 +627,61 @@ function GitHubPage({ ctx }) {
     }
   }
 
+  const viewId = (repoId, name) => {
+    let base = `${repoId}-${repoSlug(name)}`
+    let id = base
+    for (let i = 2; queries.some((q) => q.id === id); i += 1) id = `${base}-${i}`
+    return id
+  }
   const submitAdd = () => {
     const q = addQuery.trim()
     if (!q) return
-    const id = addName.trim().toLowerCase().replace(/[^a-z0-9-]+/g, '-') || `q-${Date.now()}`
-    const next = [...queries, { id, name: addName.trim() || q.slice(0, 28), q }]
+    if (!activeRepo) {
+      host.notify({ kind: 'info', message: 'Subscribe to a repository first.' })
+      return
+    }
+    const name = addName.trim() || q.slice(0, 28)
+    const next = [...queries, { id: viewId(activeRepo.id, name), repoId: activeRepo.id, name, q }]
     saveQueries(next)
-    setActiveId(id)
+    setActiveViewId(next[next.length - 1].id)
     setAddName('')
     setAddQuery('')
     setShowAdd(false)
   }
-  const removeQuery = (id) => {
-    const next = queries.filter((q) => q.id !== id)
-    saveQueries(next)
-    if (activeId === id) setActiveId(next[0] ? next[0].id : null)
+  const removeView = (id) => {
+    saveQueries(queries.filter((q) => q.id !== id))
+    if (activeViewId === id) setActiveViewId(null)
+  }
+  const submitAddRepo = () => {
+    const repo = repoDraft.trim()
+    if (!/^[\w.-]+\/[\w.-]+$/.test(repo)) {
+      host.notify({ kind: 'info', message: 'Repo must look like owner/name.' })
+      return
+    }
+    const id = repoSlug(repo)
+    if (repos.some((r) => r.id === id)) {
+      setActiveRepoId(id)
+      setRepoDraft('')
+      setShowAdd(false)
+      return
+    }
+    const nextRepos = [...repos, { id, repo }]
+    const created = makeDefaultViews(repo).map((v, i) => ({
+      id: `${id}-${i === 0 ? 'issues' : 'prs'}`,
+      repoId: id,
+      name: v.name,
+      q: v.q
+    }))
+    saveRepos(nextRepos)
+    saveQueries([...queries, ...created])
+    setActiveRepoId(id)
+    setRepoDraft('')
+    setShowAdd(false)
+  }
+  const removeRepo = (id) => {
+    saveRepos(repos.filter((r) => r.id !== id))
+    saveQueries(queries.filter((q) => q.repoId !== id))
+    if (activeRepoId === id) setActiveRepoId(repos.find((r) => r.id !== id) ? repos.find((r) => r.id !== id).id : null)
   }
   const saveToken = () => {
     const t = tokenDraft.trim()
@@ -572,18 +711,19 @@ function GitHubPage({ ctx }) {
         className: 'flex items-center gap-2 border-b border-(--ui-stroke-secondary) px-4 py-2',
         children: [
           jsx('div', { className: 'mr-1 font-semibold', children: 'GitHub' }),
-          ...queries.map((q) =>
-            jsx(QueryChip, {
-              key: q.id,
-              query: q,
-              isActive: q.id === (active ? active.id : null),
+          ...repos.map((r) =>
+            jsx(RepoChip, {
+              key: r.id,
+              repo: r,
+              views: queries.filter((q) => q.repoId === r.id),
+              isActive: r.id === (activeRepo ? activeRepo.id : null),
               read,
               backendOk,
               token,
               ctx,
               showRemove: showAdd,
-              onSelect: () => setActiveId(q.id),
-              onRemove: () => removeQuery(q.id)
+              onSelect: () => setActiveRepoId(r.id),
+              onRemove: () => removeRepo(r.id)
             })
           ),
           profiles.length > 1
@@ -648,20 +788,66 @@ function GitHubPage({ ctx }) {
         ]
       }),
 
-      /* add-query form */
+      /* view chips for the active repository */
+      activeRepo && repoViews.length > 0
+        ? jsxs('div', {
+            className: 'flex items-center gap-2 border-b border-(--ui-stroke-secondary) px-4 py-1.5',
+            children: [
+              jsx('div', {
+                className: 'text-[0.6875rem] text-(--ui-text-tertiary)',
+                children: activeRepo.repo ? activeRepo.repo : 'Your activity'
+              }),
+              ...repoViews.map((v) =>
+                jsx(ViewChip, {
+                  key: v.id,
+                  name: v.name,
+                  isActive: v.id === (activeView ? activeView.id : null),
+                  showRemove: showAdd,
+                  onSelect: () => setActiveViewId(v.id),
+                  onRemove: () => removeView(v.id)
+                })
+              ),
+              jsx('div', { className: 'flex-1' }),
+              jsx('button', {
+                type: 'button',
+                className: ghostBtnCls,
+                title: 'Add a view to this repo',
+                onClick: () => setShowAdd((v) => !v),
+                children: jsx(Codicon, { name: 'add', size: 13 })
+              })
+            ]
+          })
+        : null,
+
+      /* subscribe/manage form (repo + view) */
       showAdd
         ? jsxs('div', {
             className: 'flex items-center gap-2 border-b border-(--ui-stroke-secondary) px-4 py-2',
             children: [
               jsx('input', {
+                className: `${inputCls} w-48`,
+                placeholder: 'Repo owner/name, e.g. NousResearch/Hermes-Agent',
+                value: repoDraft,
+                onChange: (e) => setRepoDraft(e.target.value),
+                onKeyDown: (e) => {
+                  if (e.key === 'Enter') submitAddRepo()
+                }
+              }),
+              jsx('button', {
+                type: 'button',
+                className: `${ghostBtnCls} border border-(--ui-stroke-secondary)`,
+                onClick: submitAddRepo,
+                children: 'Subscribe'
+              }),
+              jsx('input', {
                 className: `${inputCls} w-36`,
-                placeholder: 'Query name',
+                placeholder: 'View name',
                 value: addName,
                 onChange: (e) => setAddName(e.target.value)
               }),
               jsx('input', {
                 className: `${inputCls} flex-1`,
-                placeholder: 'GitHub search query, e.g. repo:NousResearch/Hermes-Agent is:issue is:open',
+                placeholder: 'View query, e.g. label:type/bug (GitHub search syntax)',
                 value: addQuery,
                 onChange: (e) => setAddQuery(e.target.value),
                 onKeyDown: (e) => {
@@ -672,8 +858,14 @@ function GitHubPage({ ctx }) {
                 type: 'button',
                 className: `${ghostBtnCls} border border-(--ui-stroke-secondary)`,
                 onClick: submitAdd,
-                children: 'Add'
-              })
+                children: 'Add view'
+              }),
+              !activeRepo
+                ? jsx('div', {
+                    className: 'text-[0.6875rem] text-(--ui-text-tertiary)',
+                    children: '— subscribe a repo first'
+                  })
+                : null
             ]
           })
         : null,
@@ -821,9 +1013,9 @@ function GitHubPage({ ctx }) {
           if (!items.length)
             return jsx('div', {
               className: 'px-4 py-6 text-center text-xs text-(--ui-text-tertiary)',
-              children: queries.length
-                ? 'Nothing here yet — add a query or pick another tab.'
-                : 'No queries yet — add one with the + button.'
+              children: repos.length
+                ? 'Nothing here yet — add a view, or subscribe to another repo.'
+                : 'No repos yet — subscribe with the + button.'
             })
           return jsxs('div', {
             className: 'flex flex-col',
