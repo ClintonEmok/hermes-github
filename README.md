@@ -31,6 +31,7 @@ a next step without turning every issue into an AI task.
 | --- | --- |
 | **Read** Subscribe to saved GitHub searches (repo, label, priority, anything the search syntax supports), open the original issue or PR, and browse one query at a time. | **Remember** Issues and PRs you have opened fade out; unread items stay easy to spot. Read state is stored locally and survives restarts. |
 | **Scout** Ask the agent to triage a single issue: full-thread reading, competing-PR check, and a pickability verdict with the files likely involved. | **Act** The triage chat drafts the terse claim comment for your approval — the plugin never posts anything itself. |
+| **Dispatch** Pick a connected profile (a **To:** dropdown in the header) and hand a row a task: **Review** (verdict + concrete review comments for issues or PRs) or **Solve** (a full implementation run with worktree + test discipline). The task opens as a session on that profile. | **Stay in control** Every task prompt is wrapped in untrusted-source-data rules and an explicit *no posting, no pushing, no PRs without approval* guard — the receiving agent drafts, you approve. |
 
 The reader stays quiet until you ask it to do more. AI actions are explicit
 and use your configured Hermes providers.
