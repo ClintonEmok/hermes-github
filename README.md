@@ -59,24 +59,29 @@ fork, upstream patch, build step, or package manager.
 
 ### Install
 
-Copy the repo folder into your Hermes plugins directory and enable it:
+Copy the repo folder into your Hermes plugins directory:
 
 ```bash
 cp -R hermes-github ~/.hermes/plugins/
-hermes plugins enable hermes-github
 ```
 
-(`~/.hermes` is the default root; use `~/.hermes/profiles/<name>/plugins` …
-actually the backend is discovered from the hermes root — see below.)
+Then, in the desktop app: **Settings → Plugins** → find **GitHub** (hit
+*rescan* if it isn't listed yet) → **toggle it ON** — the desktop half
+ships opt-in and stays dark until you do. It activates live, no restart.
 
-Then restart the gateway once (Settings → Gateway, or relaunch the app) so
-the backend's API routes mount. The desktop half hot-loads by itself: open
-the **GitHub** entry in the sidebar (⌘K → **Reload desktop plugins** if it
-doesn't appear within a few seconds).
+Last, enable the Python backend (it's gated separately — the UI toggle
+does NOT import Python):
 
-> The Python backend only mounts when the plugin is enabled *and* the
-> gateway has (re)started after install. Until then the UI degrades
-> gracefully to direct unauthenticated GitHub calls.
+```bash
+hermes config set plugins.enabled '["hermes-github"]'   # or via hermes plugins/manual config
+```
+
+…and restart the gateway once so its API routes mount
+(`hermes gateway restart`, or Settings → Gateway). From then on the
+backend auto-detects the token and proxies search calls.
+
+> Until both switches are on, the plugin degrades gracefully: no backend →
+> direct unauthenticated GitHub calls; no UI toggle → no GitHub entry.
 
 ### Tokens — three rungs, no typing
 
