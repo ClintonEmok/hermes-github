@@ -43,6 +43,16 @@ function repoSlug(repo) {
   return repo.toLowerCase().replace(/[^a-z0-9/-]+/g, '-')
 }
 
+/* Accept a GitHub URL (any depth) or a bare owner/name. */
+function parseRepoInput(input) {
+  const trimmed = String(input || '').trim()
+  if (!trimmed) return null
+  const urlMatch = trimmed.match(/^(?:https?:\/\/)?(?:www\.)?github\.com\/([^/?#\s]+)\/([^/?#\s]+)/i)
+  if (urlMatch) return `${urlMatch[1]}/${urlMatch[2]}`
+  const plain = trimmed.match(/^[\w.-]+\/[\w.-]+$/)
+  return plain ? trimmed : null
+}
+
 function makeDefaultViews(repo) {
   return [
     { name: 'Issues', q: `repo:${repo} is:issue is:open` },
@@ -536,7 +546,7 @@ function GitHubPage({ ctx }) {
     isLoading,
     error
   } = useQuery({
-    queryKey: ['gh-view', activeView ? activeView.id : null, token, backendOk],
+    queryKey: ['gh-view', activeView ? activeView.id : null, activeView ? activeView.q : null, token, backendOk],
     queryFn: () => {
       if (!activeView) return Promise.resolve([])
       if (backendOk) return ghSearchBackend(activeView.q, token, ctx)
@@ -652,10 +662,16 @@ function GitHubPage({ ctx }) {
     saveQueries(queries.filter((q) => q.id !== id))
     if (activeViewId === id) setActiveViewId(null)
   }
+  const updateView = (view) => {
+    saveQueries(queries.map((q) => (q.id === view.id ? { ...q, ...view } : q)))
+  }
   const submitAddRepo = () => {
-    const repo = repoDraft.trim()
-    if (!/^[\w.-]+\/[\w.-]+$/.test(repo)) {
-      host.notify({ kind: 'info', message: 'Repo must look like owner/name.' })
+    const repo = parseRepoInput(repoDraft)
+    if (!repo) {
+      host.notify({
+        kind: 'info',
+        message: 'Paste a GitHub repo URL (github.com/owner/name) or owner/name.'
+      })
       return
     }
     const id = repoSlug(repo)
@@ -760,7 +776,7 @@ function GitHubPage({ ctx }) {
           jsx('button', {
             type: 'button',
             className: ghostBtnCls,
-            title: 'Add query',
+            title: 'Subscribe to a repo / manage',
             onClick: () => setShowAdd((v) => !v),
             children: jsx(Codicon, { name: 'add', size: 14 })
           }),
@@ -825,8 +841,8 @@ function GitHubPage({ ctx }) {
             className: 'flex items-center gap-2 border-b border-(--ui-stroke-secondary) px-4 py-2',
             children: [
               jsx('input', {
-                className: `${inputCls} w-48`,
-                placeholder: 'Repo owner/name, e.g. NousResearch/Hermes-Agent',
+                className: `${inputCls} w-56`,
+                placeholder: 'Repo URL or owner/name, e.g. github.com/NousResearch/Hermes-Agent',
                 value: repoDraft,
                 onChange: (e) => setRepoDraft(e.target.value),
                 onKeyDown: (e) => {
@@ -898,6 +914,46 @@ function GitHubPage({ ctx }) {
                 onClick: resetRead,
                 children: 'Reset read'
               })
+            ]
+          })
+        : null,
+
+      /* per-repo view editor (settings) — names and queries tweaked live */
+      showSettings && activeRepo && repoViews.length > 0
+        ? jsxs('div', {
+            className: 'flex flex-col gap-1.5 border-b border-(--ui-stroke-secondary) px-4 py-2',
+            children: [
+              jsx('div', {
+                className: 'text-xs text-(--ui-text-tertiary)',
+                children: `Views for ${activeRepo.repo || 'Your activity'} — edit live`
+              }),
+              ...repoViews.map((v) =>
+                jsxs('div', {
+                  className: 'flex items-center gap-2',
+                  key: v.id,
+                  children: [
+                    jsx('input', {
+                      className: `${inputCls} w-36`,
+                      value: v.name,
+                      title: 'View name',
+                      onChange: (e) => updateView({ id: v.id, name: e.target.value })
+                    }),
+                    jsx('input', {
+                      className: `${inputCls} flex-1 font-mono text-xs`,
+                      value: v.q,
+                      title: 'GitHub search query',
+                      onChange: (e) => updateView({ id: v.id, q: e.target.value })
+                    }),
+                    jsx('button', {
+                      type: 'button',
+                      className: ghostBtnCls,
+                      title: 'Remove view',
+                      onClick: () => removeView(v.id),
+                      children: '×'
+                    })
+                  ]
+                })
+              )
             ]
           })
         : null,

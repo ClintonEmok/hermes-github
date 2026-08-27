@@ -44,7 +44,7 @@ and use your configured Hermes providers.
   token never leaves the server.
 - Refresh automatically every 15 minutes while Hermes is open, or on demand.
 - Open an issue and it is marked read; mark the whole list read in one click.
-- Subscribe to a repo in seconds (its Issues + PRs views appear automatically); add custom views per repo; unsubscribing keeps your read history.
+- Subscribe to a repo in seconds by pasting its **GitHub URL** (or `owner/name`); its Issues + PRs views appear automatically. Tweak names and queries per repo live in the settings row (gear). Unsubscribing keeps your read history.
 - No token anywhere? It falls back to the unauthenticated GitHub budget
   (60 requests/hour) and tells you so — including the live rate-limit readout.
 
