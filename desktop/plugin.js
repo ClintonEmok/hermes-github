@@ -17,7 +17,7 @@
  * to direct unauthenticated GitHub calls (or a manually entered token).
  */
 
-import { useState, useEffect, useMemo } from 'react'
+import { useState, useEffect, useMemo, useRef } from 'react'
 import { jsx, jsxs } from 'react/jsx-runtime'
 import {
   host,
@@ -34,26 +34,25 @@ const ID = 'hermes-github'
 const SEARCH_ENDPOINT = 'https://api.github.com/search/issues'
 const AUTO_REFRESH_MS = 15 * 60 * 1000
 
-// Defaults verified against the repo's actual label set (2026-08-27):
-// there is no "good first issue" label — the pickable work lives under
-// type/bug / type/feature with P1-P3 priorities.
-const DEFAULT_QUERIES = [
-  {
-    id: 'bugs',
-    name: 'Bugs',
-    q: 'repo:NousResearch/Hermes-Agent is:issue is:open label:type/bug'
-  },
-  {
-    id: 'features',
-    name: 'Features',
-    q: 'repo:NousResearch/Hermes-Agent is:issue is:open label:type/feature'
-  },
-  {
-    id: 'prs',
-    name: 'Open PRs',
-    q: 'repo:NousResearch/Hermes-Agent is:pr is:open'
+// First-run defaults are generic and, when the backend can detect the
+// GitHub account, personalized to whoever is authenticated (community
+// plugin: works for anyone, tailored to the current login).
+const SEED_HINT = {
+  id: 'hot-prs',
+  name: 'Hot PRs',
+  q: 'is:pr is:open sort:updated-desc'
+}
+
+function makeDefaultQueries(login) {
+  if (login) {
+    return [
+      { id: 'my-prs', name: 'Your PRs', q: `author:${login} is:pr is:open` },
+      { id: 'assigned', name: 'Assigned', q: `assignee:${login} is:open` },
+      { id: 'mentions', name: 'Mentions', q: `involves:${login} is:open` }
+    ]
   }
-]
+  return [SEED_HINT]
+}
 
 const inputCls =
   'rounded-md border border-(--ui-stroke-secondary) bg-transparent px-2 py-1 text-sm outline-none focus:border-(--ui-accent)'
@@ -270,6 +269,69 @@ function relativeTime(iso) {
   return new Date(iso).toLocaleDateString()
 }
 
+const chipCls = (isActive) =>
+  `rounded-full border px-2.5 py-0.5 text-xs transition-colors ${isActive
+    ? 'border-(--ui-accent) text-(--ui-accent)'
+    : 'border-(--ui-stroke-secondary) text-(--ui-text-secondary) hover:text-foreground'}`
+
+/* Query tab with its own live unread count (kept fresh so switching tabs
+   feels instant). */
+function QueryChip({
+  query,
+  isActive,
+  read,
+  backendOk,
+  token,
+  ctx,
+  showRemove,
+  onSelect,
+  onRemove
+}) {
+  const { data: items = [] } = useQuery({
+    queryKey: ['gh-chip', query.id, token, backendOk],
+    queryFn: () => {
+      if (backendOk) return ghSearchBackend(query.q, token, ctx)
+      return ghSearchDirect(query.q, token)
+    },
+    enabled: !!query.q,
+    refetchInterval: AUTO_REFRESH_MS
+  })
+  const unread = items.filter((i) => !read.has(i.key)).length
+  return jsxs('div', {
+    className: 'flex items-center',
+    children: [
+      jsx('button', {
+        type: 'button',
+        className: chipCls(isActive),
+        title: query.q,
+        onClick: onSelect,
+        children: jsxs('span', {
+          className: 'flex items-center gap-1.5',
+          children: [
+            jsx('span', { children: query.name }),
+            unread > 0
+              ? jsx('span', {
+                  className:
+                    'rounded-full border border-(--ui-accent) px-1 text-[0.625rem] text-(--ui-accent)',
+                  children: String(unread)
+                })
+              : null
+          ]
+        })
+      }),
+      showRemove
+        ? jsx('button', {
+            type: 'button',
+            className: 'px-0.5 text-xs text-(--ui-text-tertiary) hover:text-red-400',
+            title: 'Remove query',
+            onClick: onRemove,
+            children: '×'
+          })
+        : null
+    ]
+  })
+}
+
 /* ------------------------------------------------------------------ */
 /* Page                                                                */
 /* ------------------------------------------------------------------ */
@@ -285,7 +347,7 @@ function GitHubPage({ ctx }) {
 
   const [queries, setQueriesState] = useState(() => {
     const saved = ctx.storage.get('queries')
-    return Array.isArray(saved) && saved.length ? saved : DEFAULT_QUERIES
+    return Array.isArray(saved) && saved.length ? saved : []
   })
   const [activeId, setActiveId] = useState(() => {
     const saved = ctx.storage.get('active')
@@ -346,6 +408,29 @@ function GitHubPage({ ctx }) {
   useEffect(() => {
     if (activeId) ctx.storage.set('active', activeId)
   }, [activeId, ctx])
+
+  /* First-run seeding: generic tabs, personalized to the detected login. */
+  const seededRef = useRef(false)
+  useEffect(() => {
+    if (seededRef.current) return
+    const saved = ctx.storage.get('queries')
+    if (Array.isArray(saved) && saved.length) {
+      seededRef.current = true
+      return
+    }
+    const login = autoStatus && autoStatus.login ? autoStatus.login : null
+    saveQueries(makeDefaultQueries(login))
+    seededRef.current = true
+  }, [autoStatus])
+
+  /* Upgrade the login-less seed once the account is detected. */
+  useEffect(() => {
+    if (!autoStatus || !autoStatus.login) return
+    const saved = ctx.storage.get('queries') || []
+    if (saved.length === 1 && saved[0].q === SEED_HINT.q) {
+      saveQueries(makeDefaultQueries(autoStatus.login))
+    }
+  }, [autoStatus])
 
   const active = useMemo(
     () => queries.find((q) => q.id === activeId) || queries[0],
@@ -466,11 +551,6 @@ function GitHubPage({ ctx }) {
     setShowSettings(false)
   }
 
-  const chipCls = (isActive) =>
-    `rounded-full border px-2.5 py-0.5 text-xs transition-colors ${isActive
-      ? 'border-(--ui-accent) text-(--ui-accent)'
-      : 'border-(--ui-stroke-secondary) text-(--ui-text-secondary) hover:text-foreground'}`
-
   let autoLine
   if (!hasBackend) {
     autoLine = 'Backend not mounted — restart the gateway for auto-detect'
@@ -493,26 +573,17 @@ function GitHubPage({ ctx }) {
         children: [
           jsx('div', { className: 'mr-1 font-semibold', children: 'GitHub' }),
           ...queries.map((q) =>
-            jsxs('div', {
-              className: 'flex items-center',
+            jsx(QueryChip, {
               key: q.id,
-              children: [
-                jsx('button', {
-                  type: 'button',
-                  className: chipCls(q.id === (active ? active.id : null)),
-                  onClick: () => setActiveId(q.id),
-                  children: q.name
-                }),
-                showAdd
-                  ? jsx('button', {
-                      type: 'button',
-                      className: 'px-0.5 text-xs text-(--ui-text-tertiary) hover:text-red-400',
-                      title: 'Remove query',
-                      onClick: () => removeQuery(q.id),
-                      children: '×'
-                    })
-                  : null
-              ]
+              query: q,
+              isActive: q.id === (active ? active.id : null),
+              read,
+              backendOk,
+              token,
+              ctx,
+              showRemove: showAdd,
+              onSelect: () => setActiveId(q.id),
+              onRemove: () => removeQuery(q.id)
             })
           ),
           profiles.length > 1
@@ -750,7 +821,9 @@ function GitHubPage({ ctx }) {
           if (!items.length)
             return jsx('div', {
               className: 'px-4 py-6 text-center text-xs text-(--ui-text-tertiary)',
-              children: 'Nothing here yet — add a query or pick another tab.'
+              children: queries.length
+                ? 'Nothing here yet — add a query or pick another tab.'
+                : 'No queries yet — add one with the + button.'
             })
           return jsxs('div', {
             className: 'flex flex-col',
@@ -857,6 +930,12 @@ function GitHubPage({ ctx }) {
                   ]
                 })
               }),
+              autoStatus && autoStatus.rate
+                ? jsx('div', {
+                    className: 'px-4 py-1 text-[0.6875rem] text-(--ui-text-tertiary)',
+                    children: `Rate limit: ${Number(autoStatus.rate.remaining).toLocaleString()} / ${Number(autoStatus.rate.limit).toLocaleString()} remaining`
+                  })
+                : null,
               !effectiveToken
                 ? jsx('div', {
                     className: 'px-4 py-2 text-[0.6875rem] text-(--ui-text-tertiary)',

@@ -153,7 +153,9 @@ def status() -> dict:
             login = out.stdout.strip() if out.returncode == 0 else None
         except (OSError, subprocess.SubprocessError):
             login = None
-    return {"token": bool(token), "source": source, "login": login}
+    with _lock:
+        rate = _cache.get("rate")
+    return {"token": bool(token), "source": source, "login": login, "rate": rate}
 
 
 @router.post("/search")
@@ -196,6 +198,8 @@ def search(payload: dict) -> dict:
     try:
         with urllib.request.urlopen(request, timeout=GH_TIMEOUT_S) as resp:
             data = json.loads(resp.read().decode("utf-8"))
+            rate_remaining = resp.headers.get("X-RateLimit-Remaining")
+            rate_limit = resp.headers.get("X-RateLimit-Limit")
     except urllib.error.HTTPError as exc:
         detail = f"GitHub returned {exc.code}"
         try:
@@ -207,6 +211,15 @@ def search(payload: dict) -> dict:
         raise HTTPException(status_code=exc.code, detail=detail)
     except (urllib.error.URLError, OSError) as exc:
         raise HTTPException(status_code=502, detail=f"GitHub unreachable: {exc}")
+
+    rate = None
+    if rate_remaining is not None and rate_limit is not None:
+        try:
+            rate = {"remaining": int(rate_remaining), "limit": int(rate_limit)}
+            with _lock:
+                _cache["rate"] = rate
+        except (TypeError, ValueError):
+            pass
 
     return {
         "total_count": data.get("total_count", 0),
