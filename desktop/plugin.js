@@ -12,9 +12,10 @@
  *   <hermes home>/plugins/hermes-github/dashboard/plugin_api.py  (backend)
  *   <hermes home>/plugins/hermes-github/desktop/plugin.js        (this file)
  *
- * Enable the backend once: `hermes plugins enable hermes-github`, then
- * restart the gateway so its API routes mount. Until then the UI falls back
- * to direct unauthenticated GitHub calls (or a manually entered token).
+ * Enable the backend by adding `hermes-github` to the `plugins.enabled`
+ * allow-list, then restart the gateway so its API routes mount. Until then
+ * the UI falls back to direct unauthenticated GitHub calls (or a manually
+ * entered token).
  */
 
 import { useState, useEffect, useMemo, useRef } from 'react'
@@ -61,8 +62,12 @@ function makeDefaultViews(repo) {
 }
 
 function makeActivityViews(login) {
-  if (!login) return []
+  const views = [
+    { name: 'All open PRs', q: 'is:pr is:open sort:updated-desc' }
+  ]
+  if (!login) return views
   return [
+    ...views,
     { name: 'Your PRs', q: `author:${login} is:pr is:open` },
     { name: 'Assigned', q: `assignee:${login} is:open` },
     { name: 'Mentions', q: `involves:${login} is:open` }
@@ -207,8 +212,7 @@ async function resolveRoute(profileName) {
   const routes = await host.profileRoutes()
   if (profileName) {
     const match = routes.find((r) => r.profile === profileName)
-    if (!match)
-      throw new Error(`Profile "${profileName}" is not connected.`)
+    if (!match) throw new Error(`Profile "${profileName}" is not connected.`)
     return { ...match }
   }
   const profile = host.state.profile.get()
@@ -378,7 +382,320 @@ function ViewChip({ name, isActive, showRemove, onSelect, onRemove }) {
 }
 
 /* ------------------------------------------------------------------ */
-/* Page                                                                */
+function SettingsPanel({
+  repos,
+  activeRepo,
+  repoViews,
+  profiles,
+  currentProfile,
+  dispatchTo,
+  setDispatchProfile,
+  onSelectRepo,
+  onRemoveRepo,
+  onSaveView,
+  onRemoveView,
+  onAddView,
+  autoLine,
+  autoStatus,
+  token,
+  tokenDraft,
+  setTokenDraft,
+  saveToken,
+  clearToken,
+  resetRead
+}) {
+  const repoSignature = `${activeRepo ? activeRepo.id : ''}:${repoViews.map((v) => v.id).join(',')}`
+  const [drafts, setDrafts] = useState({})
+  const [newViewName, setNewViewName] = useState('')
+  const [newViewQuery, setNewViewQuery] = useState('')
+
+  useEffect(() => {
+    setDrafts(
+      Object.fromEntries(repoViews.map((v) => [v.id, { name: v.name, q: v.q }]))
+    )
+  }, [repoSignature])
+
+  const updateDraft = (id, field, value) => {
+    setDrafts((prev) => ({
+      ...prev,
+      [id]: { ...(prev[id] || {}), [field]: value }
+    }))
+  }
+  const addView = () => {
+    const name = newViewName.trim()
+    const q = newViewQuery.trim()
+    if (!q) return
+    const result = onAddView(name, q)
+    if (result !== false) {
+      setNewViewName('')
+      setNewViewQuery('')
+    }
+  }
+  const selectedProfileAvailable = !dispatchTo || profiles.some((p) => p.profile === dispatchTo)
+
+  return jsxs('div', {
+    className: 'max-h-96 overflow-y-auto border-b border-(--ui-stroke-secondary) px-4 py-3',
+    children: [
+      jsxs('div', {
+        className: 'mb-3 flex items-center gap-2',
+        children: [
+          jsx('div', { className: 'font-semibold', children: 'Settings' }),
+          jsx('div', {
+            className: 'text-xs text-(--ui-text-tertiary)',
+            children: 'Manage subscriptions, views, access, and task behavior'
+          })
+        ]
+      }),
+
+      jsxs('section', {
+        className: 'mb-4',
+        children: [
+          jsx('div', {
+            className: 'mb-1 text-[0.6875rem] font-semibold uppercase tracking-wide text-(--ui-text-tertiary)',
+            children: 'Subscriptions'
+          }),
+          repos.length
+            ? jsxs('div', {
+                className: 'flex flex-col gap-1',
+                children: repos.map((repo) =>
+                  jsxs('div', {
+                    className: 'flex items-center gap-2 rounded-md border border-(--ui-stroke-secondary) px-2 py-1',
+                    key: repo.id,
+                    children: [
+                      jsx('button', {
+                        type: 'button',
+                        className: 'min-w-0 flex-1 truncate text-left text-xs hover:text-(--ui-accent)',
+                        onClick: () => onSelectRepo(repo.id),
+                        title: repo.repo || 'Your activity',
+                        children: repo.repo || 'Your activity'
+                      }),
+                      repo.id === (activeRepo ? activeRepo.id : null)
+                        ? jsx('span', {
+                            className: 'text-[0.625rem] text-(--ui-accent)',
+                            children: 'active'
+                          })
+                        : null,
+                      repo.id !== ACTIVITY_ID
+                        ? jsx('button', {
+                            type: 'button',
+                            className: ghostBtnCls,
+                            title: 'Unsubscribe (read markers are retained)',
+                            onClick: () => onRemoveRepo(repo.id),
+                            children: 'Remove'
+                          })
+                        : null
+                    ]
+                  })
+                )
+              })
+            : jsx('div', {
+                className: 'text-xs text-(--ui-text-tertiary)',
+                children: 'No subscriptions yet. Use + to add a GitHub repository URL.'
+              })
+        ]
+      }),
+
+      jsxs('section', {
+        className: 'mb-4',
+        children: [
+          jsx('div', {
+            className: 'mb-1 text-[0.6875rem] font-semibold uppercase tracking-wide text-(--ui-text-tertiary)',
+            children: 'Task profile'
+          }),
+          jsxs('div', {
+            className: 'flex items-center gap-2',
+            children: [
+              jsx('div', {
+                className: 'min-w-0 flex-1 text-xs text-(--ui-text-secondary)',
+                children: `Review, Triage, and Solve open in ${dispatchTo || `the current profile (${currentProfile || 'this'})`}.`
+              }),
+              profiles.length > 1
+                ? jsx('select', {
+                    className: `${inputCls} w-44`,
+                    value: dispatchTo,
+                    onChange: (e) => setDispatchProfile(e.target.value),
+                    title: 'Profile used by GitHub actions',
+                    children: [
+                      jsx('option', {
+                        key: '',
+                        value: '',
+                        children: `Current (${currentProfile || 'this'})`
+                      }),
+                      !selectedProfileAvailable
+                        ? jsx('option', {
+                            key: dispatchTo,
+                            value: dispatchTo,
+                            disabled: true,
+                            children: `${dispatchTo} (unavailable)`
+                          })
+                        : null,
+                      ...profiles
+                        .map((p) =>
+                          jsx('option', {
+                            key: p.profile,
+                            value: p.profile,
+                            children: p.profile
+                          })
+                        )
+                    ]
+                  })
+                : jsx('div', {
+                    className: 'text-xs text-(--ui-text-tertiary)',
+                    children: `Current profile: ${currentProfile || 'unknown'}`
+                  })
+            ]
+          })
+        ]
+      }),
+
+      jsxs('section', {
+        className: 'mb-4',
+        children: [
+          jsx('div', {
+            className: 'mb-1 text-[0.6875rem] font-semibold uppercase tracking-wide text-(--ui-text-tertiary)',
+            children: 'GitHub access'
+          }),
+          jsx('div', {
+            className: 'mb-1 text-xs text-(--ui-text-secondary)',
+            children: autoLine
+          }),
+          jsxs('div', {
+            className: 'flex items-center gap-2',
+            children: [
+              jsx('input', {
+                type: 'password',
+                className: `${inputCls} min-w-0 flex-1`,
+                placeholder: token ? 'Manual override set' : 'Optional manual token override',
+                value: tokenDraft,
+                onChange: (e) => setTokenDraft(e.target.value)
+              }),
+              jsx('button', {
+                type: 'button',
+                className: `${ghostBtnCls} border border-(--ui-stroke-secondary)`,
+                onClick: saveToken,
+                children: 'Save'
+              }),
+              token
+                ? jsx('button', {
+                    type: 'button',
+                    className: ghostBtnCls,
+                    onClick: clearToken,
+                    children: 'Clear override'
+                  })
+                : null
+            ]
+          }),
+          autoStatus && autoStatus.rate
+            ? jsx('div', {
+                className: 'mt-1 text-[0.6875rem] text-(--ui-text-tertiary)',
+                children: `Search rate limit: ${Number(autoStatus.rate.remaining).toLocaleString()} / ${Number(autoStatus.rate.limit).toLocaleString()} remaining`
+              })
+            : null
+        ]
+      }),
+
+      jsxs('section', {
+        className: 'mb-4',
+        children: [
+          jsx('div', {
+            className: 'mb-1 text-[0.6875rem] font-semibold uppercase tracking-wide text-(--ui-text-tertiary)',
+            children: `Views for ${activeRepo ? activeRepo.repo || 'Your activity' : 'selected repository'}`
+          }),
+          activeRepo
+            ? jsxs('div', {
+                className: 'flex flex-col gap-1.5',
+                children: [
+                  ...repoViews.map((v) => {
+                    const draft = drafts[v.id] || { name: v.name, q: v.q }
+                    const changed = draft.name !== v.name || draft.q !== v.q
+                    return jsxs('div', {
+                      className: 'flex items-center gap-2',
+                      key: v.id,
+                      children: [
+                        jsx('input', {
+                          className: `${inputCls} w-28`,
+                          value: draft.name,
+                          title: 'View name',
+                          onChange: (e) => updateDraft(v.id, 'name', e.target.value)
+                        }),
+                        jsx('input', {
+                          className: `${inputCls} min-w-0 flex-1 font-mono text-xs`,
+                          value: draft.q,
+                          title: 'GitHub search query',
+                          onChange: (e) => updateDraft(v.id, 'q', e.target.value)
+                        }),
+                        jsx('button', {
+                          type: 'button',
+                          className: `${ghostBtnCls} ${changed ? 'text-(--ui-accent)' : ''}`,
+                          disabled: !changed || !draft.q.trim(),
+                          onClick: () => onSaveView({ id: v.id, name: draft.name.trim() || v.name, q: draft.q.trim() }),
+                          children: 'Save'
+                        }),
+                        jsx('button', {
+                          type: 'button',
+                          className: ghostBtnCls,
+                          title: 'Remove view',
+                          onClick: () => onRemoveView(v.id),
+                          children: '×'
+                        })
+                      ]
+                    })
+                  }),
+                  jsxs('div', {
+                    className: 'flex items-center gap-2 border-t border-(--ui-stroke-secondary) pt-1.5',
+                    children: [
+                      jsx('input', {
+                        className: `${inputCls} w-28`,
+                        placeholder: 'New view',
+                        value: newViewName,
+                        onChange: (e) => setNewViewName(e.target.value)
+                      }),
+                      jsx('input', {
+                        className: `${inputCls} min-w-0 flex-1 font-mono text-xs`,
+                        placeholder: 'GitHub query',
+                        value: newViewQuery,
+                        onChange: (e) => setNewViewQuery(e.target.value),
+                        onKeyDown: (e) => {
+                          if (e.key === 'Enter') addView()
+                        }
+                      }),
+                      jsx('button', {
+                        type: 'button',
+                        className: `${ghostBtnCls} border border-(--ui-stroke-secondary)`,
+                        disabled: !newViewQuery.trim(),
+                        onClick: addView,
+                        children: 'Add view'
+                      })
+                    ]
+                  })
+                ]
+              })
+            : jsx('div', {
+                className: 'text-xs text-(--ui-text-tertiary)',
+                children: 'Select or subscribe to a repository first.'
+              })
+        ]
+      }),
+
+      jsxs('section', {
+        children: [
+          jsx('div', {
+            className: 'mb-1 text-[0.6875rem] font-semibold uppercase tracking-wide text-(--ui-text-tertiary)',
+            children: 'Local state'
+          }),
+          jsx('button', {
+            type: 'button',
+            className: ghostBtnCls,
+            onClick: resetRead,
+            children: 'Reset all read markers'
+          })
+        ]
+      })
+    ]
+  })
+}
+
+/* Page */
 /* ------------------------------------------------------------------ */
 
 function GitHubPage({ ctx }) {
@@ -387,8 +704,6 @@ function GitHubPage({ ctx }) {
   const [tokenDraft, setTokenDraft] = useState(token)
   const [showSettings, setShowSettings] = useState(false)
   const [showAdd, setShowAdd] = useState(false)
-  const [addName, setAddName] = useState('')
-  const [addQuery, setAddQuery] = useState('')
   const [repoDraft, setRepoDraft] = useState('')
 
   const [repos, setReposState] = useState(() => {
@@ -434,10 +749,11 @@ function GitHubPage({ ctx }) {
     }
   }, [ctx, hasBackend])
 
-  /* Connected profiles — review/solve dispatches can target any of them. */
   const currentProfile = useValue(host.state.profile)
   const [profiles, setProfiles] = useState([])
-  const [dispatchTo, setDispatchTo] = useState('')
+  const [dispatchTo, setDispatchTo] = useState(() =>
+    String(ctx.storage.get('dispatchProfile') || '')
+  )
   useEffect(() => {
     let alive = true
     host.profileRoutes()
@@ -454,6 +770,11 @@ function GitHubPage({ ctx }) {
       alive = false
     }
   }, [ctx])
+  const setDispatchProfile = (profile) => {
+    setDispatchTo(profile)
+    if (profile) ctx.storage.set('dispatchProfile', profile)
+    else ctx.storage.remove('dispatchProfile')
+  }
 
   const saveRepos = (next) => {
     setReposState(next)
@@ -470,8 +791,8 @@ function GitHubPage({ ctx }) {
     if (activeViewId) ctx.storage.set('activeView', activeViewId)
   }, [activeViewId, ctx])
 
-  /* First-run seeding + legacy migration (queries without repoId land in
-     the "Your activity" pseudo-repo). Generic + login-personalized. */
+  /* First-run seeding + migration. Activity always includes a global
+     All open PRs view; personal views are additional, never replacements. */
   const seededRef = useRef(false)
   useEffect(() => {
     if (seededRef.current) return
@@ -480,27 +801,43 @@ function GitHubPage({ ctx }) {
     const hasRepos = Array.isArray(savedRepos) && savedRepos.length
     const hasQueries = Array.isArray(savedQueries) && savedQueries.length
     if (hasRepos || hasQueries) {
-      if (hasQueries && !hasRepos) {
-        saveRepos([{ id: ACTIVITY_ID, repo: null }])
-        saveQueries(
-          savedQueries.map((q, i) => ({
+      let nextRepos = hasRepos
+        ? savedRepos
+        : [{ id: ACTIVITY_ID, repo: null }]
+      let nextQueries = hasQueries
+        ? savedQueries.map((q, i) => ({
             id: q.id || `v-${i}`,
-            repoId: ACTIVITY_ID,
+            repoId: q.repoId || ACTIVITY_ID,
             name: q.name,
             q: q.q
           }))
-        )
-        const savedActive = ctx.storage.get('active')
-        if (savedActive) {
-          setActiveViewId(savedActive)
-          ctx.storage.set('activeView', savedActive)
-        }
+        : []
+      if (!nextRepos.some((r) => r.id === ACTIVITY_ID)) {
+        nextRepos = [{ id: ACTIVITY_ID, repo: null }, ...nextRepos]
+      }
+      if (!nextQueries.some((q) => q.repoId === ACTIVITY_ID && q.q === 'is:pr is:open sort:updated-desc')) {
+        nextQueries = [
+          {
+            id: 'activity-all-open-prs',
+            repoId: ACTIVITY_ID,
+            name: 'All open PRs',
+            q: 'is:pr is:open sort:updated-desc'
+          },
+          ...nextQueries
+        ]
+      }
+      saveRepos(nextRepos)
+      saveQueries(nextQueries)
+      const savedActive = ctx.storage.get('active')
+      if (savedActive) {
+        setActiveViewId(savedActive)
+        ctx.storage.set('activeView', savedActive)
       }
       seededRef.current = true
       return
     }
-    const login = autoStatus && autoStatus.login ? autoStatus.login : null
-    if (login) {
+    if (autoStatus) {
+      const login = autoStatus.login || null
       const views = makeActivityViews(login)
       saveRepos([{ id: ACTIVITY_ID, repo: null }])
       saveQueries(
@@ -514,8 +851,7 @@ function GitHubPage({ ctx }) {
       setActiveRepoId(ACTIVITY_ID)
       seededRef.current = true
     }
-    // No login yet (backend not mounted/account unknown): stay empty and
-    // re-run when /status resolves.
+    // No backend status yet: wait for the backend to resolve.
   }, [autoStatus])
 
   const activeRepo = useMemo(
@@ -643,20 +979,21 @@ function GitHubPage({ ctx }) {
     for (let i = 2; queries.some((q) => q.id === id); i += 1) id = `${base}-${i}`
     return id
   }
-  const submitAdd = () => {
-    const q = addQuery.trim()
-    if (!q) return
+  const addView = (viewName, viewQuery) => {
+    const q = String(viewQuery || '').trim()
+    if (!q) return false
     if (!activeRepo) {
       host.notify({ kind: 'info', message: 'Subscribe to a repository first.' })
-      return
+      return false
     }
-    const name = addName.trim() || q.slice(0, 28)
-    const next = [...queries, { id: viewId(activeRepo.id, name), repoId: activeRepo.id, name, q }]
+    const name = String(viewName || '').trim() || q.slice(0, 28)
+    const next = [
+      ...queries,
+      { id: viewId(activeRepo.id, name), repoId: activeRepo.id, name, q }
+    ]
     saveQueries(next)
     setActiveViewId(next[next.length - 1].id)
-    setAddName('')
-    setAddQuery('')
-    setShowAdd(false)
+    return true
   }
   const removeView = (id) => {
     saveQueries(queries.filter((q) => q.id !== id))
@@ -706,6 +1043,12 @@ function GitHubPage({ ctx }) {
     setShowSettings(false)
   }
 
+  const clearToken = () => {
+    setToken('')
+    setTokenDraft('')
+    ctx.storage.remove('token')
+  }
+
   let autoLine
   if (!hasBackend) {
     autoLine = 'Backend not mounted — restart the gateway for auto-detect'
@@ -737,35 +1080,11 @@ function GitHubPage({ ctx }) {
               backendOk,
               token,
               ctx,
-              showRemove: showAdd,
+              showRemove: false,
               onSelect: () => setActiveRepoId(r.id),
               onRemove: () => removeRepo(r.id)
             })
           ),
-          profiles.length > 1
-            ? jsx('select', {
-                className: `${inputCls} w-36`,
-                value: dispatchTo,
-                title: 'Review/solve dispatches go to this profile',
-                onChange: (e) => setDispatchTo(e.target.value),
-                children: [
-                  jsx('option', {
-                    key: '',
-                    value: '',
-                    children: `Current (${currentProfile || 'this'})`
-                  }),
-                  ...profiles
-                    .filter((p) => p.profile !== currentProfile)
-                    .map((p) =>
-                      jsx('option', {
-                        key: p.profile,
-                        value: p.profile,
-                        children: p.profile
-                      })
-                    )
-                ]
-              })
-            : null,
           jsx('div', { className: 'flex-1' }),
           unreadCount > 0
             ? jsx('div', {
@@ -818,31 +1137,24 @@ function GitHubPage({ ctx }) {
                   key: v.id,
                   name: v.name,
                   isActive: v.id === (activeView ? activeView.id : null),
-                  showRemove: showAdd,
+                  showRemove: false,
                   onSelect: () => setActiveViewId(v.id),
                   onRemove: () => removeView(v.id)
                 })
               ),
               jsx('div', { className: 'flex-1' }),
-              jsx('button', {
-                type: 'button',
-                className: ghostBtnCls,
-                title: 'Add a view to this repo',
-                onClick: () => setShowAdd((v) => !v),
-                children: jsx(Codicon, { name: 'add', size: 13 })
-              })
             ]
           })
         : null,
 
-      /* subscribe/manage form (repo + view) */
+      /* subscribe form */
       showAdd
         ? jsxs('div', {
             className: 'flex items-center gap-2 border-b border-(--ui-stroke-secondary) px-4 py-2',
             children: [
               jsx('input', {
-                className: `${inputCls} w-56`,
-                placeholder: 'Repo URL or owner/name, e.g. github.com/NousResearch/Hermes-Agent',
+                className: `${inputCls} min-w-0 flex-1`,
+                placeholder: 'Paste a GitHub repository URL, e.g. github.com/NousResearch/Hermes-Agent',
                 value: repoDraft,
                 onChange: (e) => setRepoDraft(e.target.value),
                 onKeyDown: (e) => {
@@ -855,106 +1167,38 @@ function GitHubPage({ ctx }) {
                 onClick: submitAddRepo,
                 children: 'Subscribe'
               }),
-              jsx('input', {
-                className: `${inputCls} w-36`,
-                placeholder: 'View name',
-                value: addName,
-                onChange: (e) => setAddName(e.target.value)
-              }),
-              jsx('input', {
-                className: `${inputCls} flex-1`,
-                placeholder: 'View query, e.g. label:type/bug (GitHub search syntax)',
-                value: addQuery,
-                onChange: (e) => setAddQuery(e.target.value),
-                onKeyDown: (e) => {
-                  if (e.key === 'Enter') submitAdd()
-                }
-              }),
-              jsx('button', {
-                type: 'button',
-                className: `${ghostBtnCls} border border-(--ui-stroke-secondary)`,
-                onClick: submitAdd,
-                children: 'Add view'
-              }),
-              !activeRepo
-                ? jsx('div', {
-                    className: 'text-[0.6875rem] text-(--ui-text-tertiary)',
-                    children: '— subscribe a repo first'
-                  })
-                : null
-            ]
-          })
-        : null,
-
-      /* token settings row — auto-detect status + optional override */
-      showSettings
-        ? jsxs('div', {
-            className: 'flex items-center gap-2 border-b border-(--ui-stroke-secondary) px-4 py-2',
-            children: [
-              jsx('div', {
-                className: 'min-w-0 flex-1 text-xs text-(--ui-text-tertiary)',
-                children: autoLine
-              }),
-              jsx('input', {
-                type: 'password',
-                className: `${inputCls} w-64`,
-                placeholder: token ? '•••••••• (override set)' : 'Manual override (optional)',
-                value: tokenDraft,
-                onChange: (e) => setTokenDraft(e.target.value)
-              }),
-              jsx('button', {
-                type: 'button',
-                className: `${ghostBtnCls} border border-(--ui-stroke-secondary)`,
-                onClick: saveToken,
-                children: 'Set'
-              }),
               jsx('button', {
                 type: 'button',
                 className: ghostBtnCls,
-                onClick: resetRead,
-                children: 'Reset read'
+                onClick: () => setShowAdd(false),
+                children: 'Cancel'
               })
             ]
           })
         : null,
 
-      /* per-repo view editor (settings) — names and queries tweaked live */
-      showSettings && activeRepo && repoViews.length > 0
-        ? jsxs('div', {
-            className: 'flex flex-col gap-1.5 border-b border-(--ui-stroke-secondary) px-4 py-2',
-            children: [
-              jsx('div', {
-                className: 'text-xs text-(--ui-text-tertiary)',
-                children: `Views for ${activeRepo.repo || 'Your activity'} — edit live`
-              }),
-              ...repoViews.map((v) =>
-                jsxs('div', {
-                  className: 'flex items-center gap-2',
-                  key: v.id,
-                  children: [
-                    jsx('input', {
-                      className: `${inputCls} w-36`,
-                      value: v.name,
-                      title: 'View name',
-                      onChange: (e) => updateView({ id: v.id, name: e.target.value })
-                    }),
-                    jsx('input', {
-                      className: `${inputCls} flex-1 font-mono text-xs`,
-                      value: v.q,
-                      title: 'GitHub search query',
-                      onChange: (e) => updateView({ id: v.id, q: e.target.value })
-                    }),
-                    jsx('button', {
-                      type: 'button',
-                      className: ghostBtnCls,
-                      title: 'Remove view',
-                      onClick: () => removeView(v.id),
-                      children: '×'
-                    })
-                  ]
-                })
-              )
-            ]
+      showSettings
+        ? jsx(SettingsPanel, {
+            repos,
+            activeRepo,
+            repoViews,
+            profiles,
+            currentProfile,
+            dispatchTo,
+            setDispatchProfile,
+            onSelectRepo: (id) => setActiveRepoId(id),
+            onRemoveRepo: removeRepo,
+            onSaveView: updateView,
+            onRemoveView: removeView,
+            onAddView: addView,
+            autoLine,
+            autoStatus,
+            token,
+            tokenDraft,
+            setTokenDraft,
+            saveToken,
+            clearToken,
+            resetRead
           })
         : null,
 
@@ -994,9 +1238,9 @@ function GitHubPage({ ctx }) {
               jsx('button', {
                 type: 'button',
                 className: `${ghostBtnCls} border border-(--ui-stroke-secondary) text-(--ui-accent)`,
-                title: 'Open the session on the target profile',
+                title: 'Open the session in the current Hermes profile',
                 onClick: doDispatch,
-                children: `Dispatch → ${dispatchTo || currentProfile || 'current'}`
+                children: 'Dispatch'
               })
             ]
           }),
@@ -1005,30 +1249,7 @@ function GitHubPage({ ctx }) {
             children: [
               jsx('div', {
                 className: 'text-[0.6875rem] text-(--ui-text-tertiary)',
-                children: `Instructions for the receiving agent · ${TASK_KIND_LABEL[dispatchItem.kind] || 'task'}`
-              }),
-              jsx('div', { className: 'flex-1' }),
-              jsx('select', {
-                className: `${inputCls} w-36`,
-                value: dispatchTo,
-                title: 'Dispatch target profile',
-                onChange: (e) => setDispatchTo(e.target.value),
-                children: [
-                  jsx('option', {
-                    key: '',
-                    value: '',
-                    children: `Current (${currentProfile || 'this'})`
-                  }),
-                  ...profiles
-                    .filter((p) => p.profile !== currentProfile)
-                    .map((p) =>
-                      jsx('option', {
-                        key: p.profile,
-                        value: p.profile,
-                        children: p.profile
-                      })
-                    )
-                ]
+                children: `Instructions for the current Hermes profile · ${TASK_KIND_LABEL[dispatchItem.kind] || 'task'}`
               })
             ]
           }),

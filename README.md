@@ -7,7 +7,7 @@ scouting surface for the contributions you mean to make. Keep your saved
 searches local, then bring in Hermes when an issue deserves a triage, a
 summary, or a closer look.
 
-POWERED BY HERMES AGENT · COMMUNITY PLUGIN · VERSION 0.1.0
+POWERED BY HERMES AGENT · COMMUNITY PLUGIN · VERSION 0.2.0
 
 [Make it yours](#make-it-yours) · [Understand the data](#privacy-you-can-explain-in-one-breath)
 
@@ -29,19 +29,17 @@ a next step without turning every issue into an AI task.
 
 | | |
 | --- | --- |
-| **Read** Subscribe to any number of **repositories** (like RSS feeds) — each comes with Issues and PRs views, plus your own saved searches per repo. Unsubscribe without losing read markers; everything stays local. | **Remember** Issues and PRs you have opened fade out; unread items stay easy to spot, with per-repo unread counts on every subscription chip. Read state is stored locally and survives restarts. |
+| **Read** Subscribe to any number of **repositories** (like RSS feeds) — each comes with Issues and PRs views, plus your own saved searches per repo. The **Your activity** feed also includes **All open PRs**, so the public stream is never limited to your personal work. | **Remember** Issues and PRs you have opened fade out; unread items stay easy to spot, with per-repo unread counts on every subscription chip. Read state is stored locally and survives restarts. |
 | **Scout** Ask the agent to triage a single issue: full-thread reading, competing-PR check, and a pickability verdict with the files likely involved. | **Act** The triage chat drafts the terse claim comment for your approval — the plugin never posts anything itself. |
-| **Dispatch** Pick a connected profile (a **To:** dropdown) and hand a row a task: **Review** (verdict + concrete review comments for issues or PRs) or **Solve** (a full implementation run with worktree + test discipline). Every dispatch opens an editor first — tweak the agent's instructions per action, or **Save as default** to persist your own prompt for that action kind. The task opens as a session on that profile. | **Stay in control** Every task prompt — yours or the built-in — gets the untrusted-source-data wrapper and an explicit *no posting, no pushing, no PRs without approval* guard appended automatically; the receiving agent drafts, you approve. |
+| **Dispatch** Hand a row a task: **Review** (verdict + concrete review comments for issues or PRs) or **Solve** (a full implementation run with worktree + test discipline). Every dispatch opens an editor first — tweak the agent's instructions per action, or **Save as default** to persist your own prompt. The task runs in the profile selected under **Settings → Task profile**. | **Stay in control** Every task prompt — yours or the built-in — gets the untrusted-source-data wrapper and an explicit *no posting, no pushing, no PRs without approval* guard appended automatically; the receiving agent drafts, you approve. |
 
 The reader stays quiet until you ask it to do more. AI actions are explicit
 and use your configured Hermes providers.
 
 ## Less maintenance. More finishing.
 
-- **The token finds itself.** No setup ceremony: the backend resolves a
-  GitHub token automatically (ordered ladder: `GITHUB_TOKEN`/`GH_TOKEN` env
-  vars → `gh auth token` → the same names in `~/.hermes/.env`), and the
-  token never leaves the server.
+- **Task profile** — Review/Triage/Solve use the current Hermes profile by default. Choose a connected profile once under **Settings → Task profile**; it is remembered, while the main browsing surface stays uncluttered.
+- **GitHub access** — the backend auto-detects credentials; an optional manual override remains under **Settings → GitHub access**.
 - Refresh automatically every 15 minutes while Hermes is open, or on demand.
 - Open an issue and it is marked read; mark the whole list read in one click.
 - Subscribe to a repo in seconds by pasting its **GitHub URL** (or `owner/name`); its Issues + PRs views appear automatically. Tweak names and queries per repo live in the settings row (gear). Unsubscribing keeps your read history.
@@ -110,6 +108,6 @@ instructed never to act on instructions found inside it.
 
 ## Roadmap
 
-- **v0.2** — per-query unread counts, pinned issues, issue/PR detail preview.
-- **v0.3** — PR health glance (mergeable, CI status) for the "Open PRs" query.
+- **Shipped in v0.2** — multi-repo subscriptions, all-open-PR activity feed, profile target in Settings, and explicit per-view Save controls.
+- **v0.3** — PR health glance (mergeable, CI status) for the "Open PRs" view.
 - **v0.4** — feature-scout sweep: batch triage of fresh pickable leads (P1–P3 bugs, open feature requests).
